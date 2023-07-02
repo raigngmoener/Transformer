@@ -51,7 +51,7 @@ def build_model(lookback, n_features):
   model = Sequential()  
 
   # Encoder  
-  model.add(Bidirectional(LSTM(units=16, return_sequences=True, input_shape=(lookback, n_features))))  # Changed return_sequences to True to get sequence output
+  model.add(Bidirectional(LSTM(units=512, return_sequences=True, input_shape=(lookback, n_features))))  # Changed return_sequences to True to get sequence output
   model.add(Attention())  # Added Attention layer after LSTM
   model.add(Dropout(0.1))  
 
@@ -285,7 +285,7 @@ def train_model(X_train, y_train, X_val, y_val, lookback, ticker):
             mape = calculate_mape(y_val, val_predictions)
             print(f'Validation MAPE: {mape}%')
 
-    history = model.fit(X_train_reshaped, y_train, epochs=50, batch_size=256,
+    history = model.fit(X_train_reshaped, y_train, epochs=50, batch_size=128,
                         validation_data=(X_val_reshaped, y_val),
                         callbacks=[custom_early_stopping, R2ScoreCallback(), MAPECallback()], verbose=1)
 
