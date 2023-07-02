@@ -6,7 +6,7 @@ pyplot.rcParams['figure.dpi'] = 600
 pyplot.rcParams['savefig.dpi'] = 600
 from sklearn.preprocessing import MinMaxScaler
 from keras.models import Sequential
-from keras.layers import LSTM, Dropout, Dense, Bidirectional, RepeatVector, TimeDistributed, Attention
+from keras.layers import LSTM, Dropout, Dense, Bidirectional, RepeatVector, TimeDistributed
 from keras.callbacks import Callback
 import tensorflow as tf
 from sklearn.metrics import r2_score
@@ -16,43 +16,37 @@ import time
 import pandas as pd
 import pandas_ta as pta
 from joblib import Parallel, delayed
-from keras.models import Model
 
 # Set the precision to a higher value (e.g., 15 decimal places)
 pd.set_option('display.precision', 15)
 
 physical_devices = tf.config.list_physical_devices('GPU')
 
-from keras.layers import Attention
-
 def build_model(lookback, n_features):
+    model = Sequential()
+
     # Encoder
-    input_layer = Input(shape=(lookback, n_features))
-    encoder = Bidirectional(LSTM(units=128, return_sequences=True))(input_layer)
-    encoder = Dropout(0.1)(encoder)
+    model.add(Bidirectional(LSTM(units=128, return_sequences=False, input_shape=(lookback, n_features))))
+    model.add(Dropout(0.1))
 
-    # Split encoder output into query and value tensors
-    query = encoder[:, -1, :]  # Extract the last timestep of the encoder output as the query tensor
-    value = encoder[:, :-1, :]  # Exclude the last timestep from the value tensor
-
-    # Attention mechanism
-    attention = Attention()
-    context_vector = attention([query, value])
+    # Repeat the encoder output
+    model.add(RepeatVector(lookback))
 
     # Decoder
-    decoder = Dense(units=128)(context_vector)
-    decoder = Dense(units=64)(decoder)
-    decoder = Dense(units=16)(decoder)  # Increase the number of units to accommodate the ACOG feature
+    model.add(LSTM(units=128, return_sequences=True))
+    model.add(Dense(units=128))
+    model.add(Dense(units=64))
+    model.add(Dense(units=16))  # Increase the number of units to accommodate the ACOG feature
 
     # TimeDistributed layer to generate the output sequence
-    output_layer = Dense(units=1)
-    decoder = output_layer(decoder)
+    model.add(TimeDistributed(Dense(units=1)))
 
-    model = Model(inputs=input_layer, outputs=decoder)
     optimizer = tf.keras.optimizers.legacy.Adam(learning_rate=0.001)
 
     # Compile the model with mean squared error loss and mean absolute error metric
-    model.compile(optimizer=optimizer, loss='mean_squared_error', metrics=['mean_absolute_error'])
+    model.compile(optimizer=optimizer,
+                  loss='mean_squared_error',
+                  metrics=['mean_absolute_error'])
 
     return model
 
@@ -223,12 +217,12 @@ def train_model(X_train, y_train, X_val, y_val, lookback, ticker):
     num_crossings = 2
 
     model = build_model(lookback, X_train.shape[2])
-    X_train_reshaped = X_train.reshape(X_train.shape[0], lookback, -1)
-    X_val_reshaped = X_val.reshape(X_val.shape[0], lookback, -1)
+    X_train_reshaped = X_train.reshape(X_train.shape[0], lookback, X_train.shape[2])
+    X_val_reshaped = X_val.reshape(X_val.shape[0], lookback, X_val.shape[2])
     y_train = y_train.reshape(-1, 1)
     y_val = y_val.reshape(-1, 1)
 
-    class CustomEarlyStopping(tf.keras.callbacks.Callback):
+    class CustomEarlyStopping(Callback):
         def __init__(self, threshold, num_crossings):
             super(CustomEarlyStopping, self).__init__()
             self.threshold = threshold
@@ -250,20 +244,18 @@ def train_model(X_train, y_train, X_val, y_val, lookback, ticker):
 
     custom_early_stopping = CustomEarlyStopping(threshold=threshold_value, num_crossings=num_crossings)
 
+    # Then in your callbacks:
     class R2ScoreCallback(tf.keras.callbacks.Callback):
         def on_epoch_end(self, epoch, logs=None):
             val_predictions = self.model.predict(X_val_reshaped)
-            val_predictions = tf.squeeze(val_predictions, axis=-1)
-            val_predictions = tf.cast(val_predictions, dtype=tf.float32)
-            y_val_flat = tf.reshape(y_val, [-1])[:val_predictions.shape[0]]
-            val_predictions_flat = tf.reshape(val_predictions, [-1])
-            r2 = r2_score(y_val_flat.numpy(), val_predictions_flat.numpy())
+            val_predictions = val_predictions[:, -1, :]  # Add this line
+            r2 = r2_score(y_val, val_predictions)
             print(f'Validation R2 Score: {r2}')
 
     class MAPECallback(tf.keras.callbacks.Callback):
         def on_epoch_end(self, epoch, logs=None):
             val_predictions = self.model.predict(X_val_reshaped)
-            val_predictions = val_predictions[:, -1, :]
+            val_predictions = val_predictions[:, -1, :]  # Add this line
             mape = calculate_mape(y_val, val_predictions)
             print(f'Validation MAPE: {mape}%')
 
