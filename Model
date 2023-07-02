@@ -16,39 +16,65 @@ import time
 import pandas as pd
 import pandas_ta as pta
 from joblib import Parallel, delayed
+from keras.layers import Layer
+import keras.backend as K
 
 # Set the precision to a higher value (e.g., 15 decimal places)
 pd.set_option('display.precision', 15)
 
 physical_devices = tf.config.list_physical_devices('GPU')
 
-def build_model(lookback, n_features):
-    model = Sequential()
+class Attention(Layer):
+    def __init__(self, **kwargs):
+        super(Attention, self).__init__(**kwargs)
 
-    # Encoder
-    model.add(Bidirectional(LSTM(units=128, return_sequences=False, input_shape=(lookback, n_features))))
-    model.add(Dropout(0.1))
+    def build(self, input_shape):
+        self.W=self.add_weight(name="att_weight", shape=(input_shape[-1],1),initializer="normal")
+        self.b=self.add_weight(name="att_bias", shape=(input_shape[1],1),initializer="zeros")        
+        super(Attention, self).build(input_shape)
 
-    # Repeat the encoder output
-    model.add(RepeatVector(lookback))
+    def call(self, x):
+        et=K.squeeze(K.tanh(K.dot(x,self.W)+self.b),axis=-1)
+        at=K.softmax(et)
+        at=K.expand_dims(at,axis=-1)
+        output=x*at
+        return K.sum(output, axis=1)
 
-    # Decoder
-    model.add(LSTM(units=128, return_sequences=True))
-    model.add(Dense(units=128))
-    model.add(Dense(units=64))
-    model.add(Dense(units=16))  # Increase the number of units to accommodate the ACOG feature
+    def compute_output_shape(self, input_shape):
+        return (input_shape[0], input_shape[-1])
 
-    # TimeDistributed layer to generate the output sequence
-    model.add(TimeDistributed(Dense(units=1)))
+    def get_config(self):
+        return super(Attention,self).get_config()
 
-    optimizer = tf.keras.optimizers.legacy.Adam(learning_rate=0.001)
 
-    # Compile the model with mean squared error loss and mean absolute error metric
-    model.compile(optimizer=optimizer,
-                  loss='mean_squared_error',
-                  metrics=['mean_absolute_error'])
+def build_model(lookback, n_features):  
+  model = Sequential()  
 
-    return model
+  # Encoder  
+  model.add(Bidirectional(LSTM(units=16, return_sequences=True, input_shape=(lookback, n_features))))  # Changed return_sequences to True to get sequence output
+  model.add(Attention())  # Added Attention layer after LSTM
+  model.add(Dropout(0.1))  
+
+  # Repeat the encoder output  
+  model.add(RepeatVector(lookback))  
+
+  # Decoder  
+  model.add(LSTM(units=128, return_sequences=True))  
+  model.add(Dense(units=128))  
+  model.add(Dense(units=64))  
+  model.add(Dense(units=16)) # Increase the number of units to accommodate the ACOG feature  
+
+  # TimeDistributed layer to generate the output sequence  
+  model.add(TimeDistributed(Dense(units=1)))  
+
+  optimizer = tf.keras.optimizers.legacy.Adam(learning_rate=0.001)  
+
+  # Compile the model with mean squared error loss and mean absolute error metric  
+  model.compile(optimizer=optimizer,  
+  loss='mean_squared_error',  
+  metrics=['mean_absolute_error'])  
+
+  return model
 
 def calculate_weighted_alpha(data, window_length=14):
     close = data['Close']
@@ -259,7 +285,7 @@ def train_model(X_train, y_train, X_val, y_val, lookback, ticker):
             mape = calculate_mape(y_val, val_predictions)
             print(f'Validation MAPE: {mape}%')
 
-    history = model.fit(X_train_reshaped, y_train, epochs=50, batch_size=128,
+    history = model.fit(X_train_reshaped, y_train, epochs=50, batch_size=256,
                         validation_data=(X_val_reshaped, y_val),
                         callbacks=[custom_early_stopping, R2ScoreCallback(), MAPECallback()], verbose=1)
 
