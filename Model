@@ -6,7 +6,7 @@ pyplot.rcParams['figure.dpi'] = 600
 pyplot.rcParams['savefig.dpi'] = 600
 from sklearn.preprocessing import MinMaxScaler
 from keras.models import Sequential
-from keras.layers import LSTM, Dropout, Dense, Bidirectional, RepeatVector, TimeDistributed
+from keras.layers import LSTM, Dropout, Dense, Bidirectional, RepeatVector, TimeDistributed, Attention
 from keras.callbacks import Callback
 import tensorflow as tf
 from sklearn.metrics import r2_score
@@ -16,38 +16,43 @@ import time
 import pandas as pd
 import pandas_ta as pta
 from joblib import Parallel, delayed
-from pmdarima.arima import auto_arima
+from keras.models import Model
 
 # Set the precision to a higher value (e.g., 15 decimal places)
 pd.set_option('display.precision', 15)
 
 physical_devices = tf.config.list_physical_devices('GPU')
 
+from keras.layers import Attention
+
 def build_model(lookback, n_features):
-    model = Sequential()
-
     # Encoder
-    model.add(Bidirectional(LSTM(units=128, return_sequences=False, input_shape=(lookback, n_features))))
-    model.add(Dropout(0.1))
+    input_layer = Input(shape=(lookback, n_features))
+    encoder = Bidirectional(LSTM(units=128, return_sequences=True))(input_layer)
+    encoder = Dropout(0.1)(encoder)
 
-    # Repeat the encoder output
-    model.add(RepeatVector(lookback))
+    # Split encoder output into query and value tensors
+    query = encoder[:, -1, :]  # Extract the last timestep of the encoder output as the query tensor
+    value = encoder[:, :-1, :]  # Exclude the last timestep from the value tensor
+
+    # Attention mechanism
+    attention = Attention()
+    context_vector = attention([query, value])
 
     # Decoder
-    model.add(LSTM(units=128, return_sequences=True))
-    model.add(Dense(units=128))
-    model.add(Dense(units=64))
-    model.add(Dense(units=16))  # Increase the number of units to accommodate the ACOG feature
+    decoder = Dense(units=128)(context_vector)
+    decoder = Dense(units=64)(decoder)
+    decoder = Dense(units=16)(decoder)  # Increase the number of units to accommodate the ACOG feature
 
     # TimeDistributed layer to generate the output sequence
-    model.add(TimeDistributed(Dense(units=1)))
+    output_layer = Dense(units=1)
+    decoder = output_layer(decoder)
 
+    model = Model(inputs=input_layer, outputs=decoder)
     optimizer = tf.keras.optimizers.legacy.Adam(learning_rate=0.001)
 
     # Compile the model with mean squared error loss and mean absolute error metric
-    model.compile(optimizer=optimizer,
-                  loss='mean_squared_error',
-                  metrics=['mean_absolute_error'])
+    model.compile(optimizer=optimizer, loss='mean_squared_error', metrics=['mean_absolute_error'])
 
     return model
 
@@ -218,12 +223,12 @@ def train_model(X_train, y_train, X_val, y_val, lookback, ticker):
     num_crossings = 2
 
     model = build_model(lookback, X_train.shape[2])
-    X_train_reshaped = X_train.reshape(X_train.shape[0], lookback, X_train.shape[2])
-    X_val_reshaped = X_val.reshape(X_val.shape[0], lookback, X_val.shape[2])
+    X_train_reshaped = X_train.reshape(X_train.shape[0], lookback, -1)
+    X_val_reshaped = X_val.reshape(X_val.shape[0], lookback, -1)
     y_train = y_train.reshape(-1, 1)
     y_val = y_val.reshape(-1, 1)
 
-    class CustomEarlyStopping(Callback):
+    class CustomEarlyStopping(tf.keras.callbacks.Callback):
         def __init__(self, threshold, num_crossings):
             super(CustomEarlyStopping, self).__init__()
             self.threshold = threshold
@@ -245,22 +250,24 @@ def train_model(X_train, y_train, X_val, y_val, lookback, ticker):
 
     custom_early_stopping = CustomEarlyStopping(threshold=threshold_value, num_crossings=num_crossings)
 
-    # Then in your callbacks:
     class R2ScoreCallback(tf.keras.callbacks.Callback):
         def on_epoch_end(self, epoch, logs=None):
             val_predictions = self.model.predict(X_val_reshaped)
-            val_predictions = val_predictions[:, 0]  # Adjust this line to ensure correct shape
-            r2 = r2_score(y_val, val_predictions)
+            val_predictions = tf.squeeze(val_predictions, axis=-1)
+            val_predictions = tf.cast(val_predictions, dtype=tf.float32)
+            y_val_flat = tf.reshape(y_val, [-1])[:val_predictions.shape[0]]
+            val_predictions_flat = tf.reshape(val_predictions, [-1])
+            r2 = r2_score(y_val_flat.numpy(), val_predictions_flat.numpy())
             print(f'Validation R2 Score: {r2}')
 
     class MAPECallback(tf.keras.callbacks.Callback):
         def on_epoch_end(self, epoch, logs=None):
             val_predictions = self.model.predict(X_val_reshaped)
-            val_predictions = val_predictions[:, 0]  # Adjust this line to ensure correct shape
+            val_predictions = val_predictions[:, -1, :]
             mape = calculate_mape(y_val, val_predictions)
             print(f'Validation MAPE: {mape}%')
 
-    history = model.fit(X_train_reshaped, y_train, epochs=5, batch_size=128,
+    history = model.fit(X_train_reshaped, y_train, epochs=50, batch_size=128,
                         validation_data=(X_val_reshaped, y_val),
                         callbacks=[custom_early_stopping, R2ScoreCallback(), MAPECallback()], verbose=1)
 
@@ -285,13 +292,13 @@ def plot_performance(y_train, training_predicted, y_val, validation_predicted, y
              color='orange', label='Actual Prices (Validation)')
     
     # Plotting predicted prices
-    predicted_prices_train = scaler_y.inverse_transform(training_predicted.reshape(-1, 1)).flatten()
+    predicted_prices_train = scaler_y.inverse_transform(training_predicted[:, -1, :]).flatten()  # Updated line
     print(f"Starting time step (Predicted Training): {lookback}")
     plt.plot(np.arange(lookback, lookback + len(predicted_prices_train)),
              predicted_prices_train,
              color='green', label='Predicted Prices (Training)')
     
-    predicted_prices_val = scaler_y.inverse_transform(validation_predicted.reshape(-1, 1)).flatten()
+    predicted_prices_val = scaler_y.inverse_transform(validation_predicted[:, -1, :]).flatten()  # Updated line
     print(f"Starting time step (Predicted Validation): {len(historical_prices_train) + len(historical_prices_val) + lookback}")
     plt.plot(np.arange(len(historical_prices_train) + len(historical_prices_val) + lookback,
                        len(historical_prices_train) + len(historical_prices_val) + lookback + len(predicted_prices_val)),
@@ -307,7 +314,7 @@ def plot_performance(y_train, training_predicted, y_val, validation_predicted, y
              color='purple', label='Actual Prices (Testing)')
     
     # Plotting predicted prices of testing data
-    predicted_prices_test = scaler_y.inverse_transform(test_predicted.reshape(-1, 1)).flatten()
+    predicted_prices_test = scaler_y.inverse_transform(test_predicted[:, -1, :]).flatten()  # Updated line
     print(f"Starting time step (Predicted Testing): {len(historical_prices_train) + len(historical_prices_val) + lookback}")
     plt.plot(np.arange(len(historical_prices_train) + len(historical_prices_val) + lookback,
                        len(historical_prices_train) + len(historical_prices_val) + lookback + len(predicted_prices_test)),
