@@ -47,21 +47,21 @@ class Attention(Layer):
         return super(Attention,self).get_config()
 
 
-def build_model(lookback, n_features):  
+def build_model(lookback, n_features):
   model = Sequential()  
 
   # Encoder  
-  model.add(Bidirectional(LSTM(units=512, return_sequences=True, input_shape=(lookback, n_features))))  # Changed return_sequences to True to get sequence output
+  model.add(LSTM(units=256, return_sequences=True, input_shape=(lookback, n_features))) # Changed return_sequences to True to get sequence output
   model.add(Attention())  # Added Attention layer after LSTM
-  model.add(Dropout(0.1))  
+  model.add(Dropout(0.8))
 
   # Repeat the encoder output  
   model.add(RepeatVector(lookback))  
 
   # Decoder  
-  model.add(LSTM(units=128, return_sequences=True))  
-  model.add(Dense(units=128))  
+  model.add(LSTM(units=64, return_sequences=True))
   model.add(Dense(units=64))  
+  model.add(Dense(units=32))  
   model.add(Dense(units=16)) # Increase the number of units to accommodate the ACOG feature  
 
   # TimeDistributed layer to generate the output sequence  
@@ -145,37 +145,42 @@ def load_stock_data(ticker, unit='1m'):
     ]
 
     # Define the function to calculate a single feature
-    def calculate_feature(feature_name):
+    def calculate_feature(data, feature_name):
+        open_price = data['Open']
+        high = data['High']
+        low = data['Low']
+        close = data['Close']
+        volume = data['Volume']
         if feature_name == 'RSI':
-            return calculate_rsi(data['Close'])
+            return calculate_rsi(close)
         elif feature_name == 'Fisher_Transform':
-            return calculate_fisher_transform(data)
+            return calculate_fisher_transform({'Close': close})
         elif feature_name == 'Bollinger_Bands':
-            return talib.BBANDS(data['Close'])[0]
+            return talib.BBANDS(close)[0]
         elif feature_name == 'CCI':
-            return talib.CCI(data['High'], data['Low'], data['Close'])
+            return talib.CCI(high, low, close)
         elif feature_name == 'ROC':
-            return talib.ROC(data['Close'])
+            return talib.ROC(close)
         elif feature_name == 'Stoch_RSI_K':
-            return talib.STOCHRSI(data['Close'])[0]
+            return talib.STOCHRSI(close)[0]
         elif feature_name == 'BOP':
-            return talib.BOP(data['Open'], data['High'], data['Low'], data['Close'])
+            return talib.BOP(open_price, high, low, close)
         elif feature_name == 'DMI':
-            return talib.DX(data['High'], data['Low'], data['Close'])
+            return talib.DX(high, low, close)
         elif feature_name == 'Typical_Price':
-            return (data['High'] + data['Low'] + data['Close']) / 3
+            return (high + low + close) / 3
         elif feature_name == 'Ultimate_Oscillator':
-            return talib.ULTOSC(data['High'], data['Low'], data['Close'])
+            return talib.ULTOSC(high, low, close)
         elif feature_name == 'Adaptive_Center_of_Gravity':
-            return talib.ADOSC(data['High'], data['Low'], data['Close'], data['Volume'])
+            return talib.ADOSC(high, low, close, volume)
         elif feature_name == 'KER':
-            return calculate_ker(data['Close'])
+            return calculate_ker(close)
         elif feature_name == 'HT_TRENDMODE':
-            return ta.trend.sma_indicator(data['Close'], window=9)
+            return ta.trend.sma_indicator(close, window=9)
         elif feature_name == 'HT_DCPHASE':
-            return ta.trend.ema_indicator(data['Close'], window=9)
+            return talib.HT_DCPHASE(close)
         elif feature_name == 'ATR':
-            return ta.volatility.average_true_range(data['High'], data['Low'], data['Close'])
+            return ta.volatility.average_true_range(high, low, close)
         elif feature_name == 'Supertrend':
             return calculate_supertrend(data)
         elif feature_name == 'Weighted_Alpha':
@@ -184,13 +189,17 @@ def load_stock_data(ticker, unit='1m'):
             return calculate_keltner_bands(data)
 
     # Calculate features in parallel using multiple cores
-    calculated_features = Parallel(n_jobs=-1)(delayed(calculate_feature)(feature) for feature in features_to_calculate)
+    calculated_features = Parallel(n_jobs=-1)(delayed(calculate_feature)(data, feature) for feature in features_to_calculate)
 
     # Combine the calculated features into the data DataFrame
     data_values = np.array(data)
 
     for i, feature_name in enumerate(features_to_calculate):
-        data_values = np.column_stack((data_values, calculated_features[i]))
+        feature_values = calculated_features[i]
+        # Check that the feature values have the correct shape
+        if feature_values.shape[0] != data_values.shape[0]:
+            raise ValueError(f"Feature {feature_name} has incorrect shape: {feature_values.shape}")
+        data_values = np.column_stack((data_values, feature_values))
 
     data_values = data_values[~np.isnan(data_values).any(axis=1)]  # remove rows with NaN
 
@@ -232,7 +241,7 @@ def split_data(X, y, train_size=0.7, val_size=0.2):
     return X_train, X_val, X_test, y_train, y_val, y_test
 
 def calculate_mape(y_true, y_pred):
-    epsilon = 1e-3
+    epsilon = 1e-2
     absolute_errors = np.abs(y_true - y_pred)
     percentage_errors = absolute_errors / np.abs(y_true + epsilon)
     mape = np.mean(percentage_errors) * 100
@@ -240,7 +249,7 @@ def calculate_mape(y_true, y_pred):
 
 def train_model(X_train, y_train, X_val, y_val, lookback, ticker):
     threshold_value = 0.01
-    num_crossings = 2
+    num_crossings = 1
 
     model = build_model(lookback, X_train.shape[2])
     X_train_reshaped = X_train.reshape(X_train.shape[0], lookback, X_train.shape[2])
@@ -285,7 +294,7 @@ def train_model(X_train, y_train, X_val, y_val, lookback, ticker):
             mape = calculate_mape(y_val, val_predictions)
             print(f'Validation MAPE: {mape}%')
 
-    history = model.fit(X_train_reshaped, y_train, epochs=50, batch_size=128,
+    history = model.fit(X_train_reshaped, y_train, epochs=5, batch_size=64,
                         validation_data=(X_val_reshaped, y_val),
                         callbacks=[custom_early_stopping, R2ScoreCallback(), MAPECallback()], verbose=1)
 
@@ -294,50 +303,40 @@ def train_model(X_train, y_train, X_val, y_val, lookback, ticker):
 
     return model, training_predicted, validation_predicted, history
 
+def plot_data(start, end, data, color, label):
+    plt.plot(np.arange(start, end), data, color=color, label=label)
+
 def plot_performance(y_train, training_predicted, y_val, validation_predicted, y_test, test_predicted, scaler_y, lookback):
     plt.figure(figsize=(20, 10))
     
     # Plotting historical prices
     historical_prices_train = scaler_y.inverse_transform(y_train.reshape(-1, 1)).flatten()
-    print(f"Starting time step (Training): {len(historical_prices_train)}")
-    plt.plot(np.arange(0, len(historical_prices_train)), historical_prices_train,
-             color='blue', label='Actual Prices (Training)')
+    plot_data(0, len(historical_prices_train), historical_prices_train, 'blue', 'Actual Prices (Training)')
     
     historical_prices_val = scaler_y.inverse_transform(y_val.reshape(-1, 1)).flatten()
-    print(f"Starting time step (Validation): {len(historical_prices_train) + len(historical_prices_val)}")
-    plt.plot(np.arange(len(historical_prices_train), len(historical_prices_train) + len(historical_prices_val)),
-             historical_prices_val,
-             color='orange', label='Actual Prices (Validation)')
+    plot_data(len(historical_prices_train), len(historical_prices_train) + len(historical_prices_val),
+              historical_prices_val, 'orange', 'Actual Prices (Validation)')
     
     # Plotting predicted prices
-    predicted_prices_train = scaler_y.inverse_transform(training_predicted[:, -1, :]).flatten()  # Updated line
-    print(f"Starting time step (Predicted Training): {lookback}")
-    plt.plot(np.arange(lookback, lookback + len(predicted_prices_train)),
-             predicted_prices_train,
-             color='green', label='Predicted Prices (Training)')
+    predicted_prices_train = scaler_y.inverse_transform(training_predicted[:, -1, :]).flatten()
+    plot_data(lookback, lookback + len(predicted_prices_train), predicted_prices_train, 'green', 'Predicted Prices (Training)')
     
-    predicted_prices_val = scaler_y.inverse_transform(validation_predicted[:, -1, :]).flatten()  # Updated line
-    print(f"Starting time step (Predicted Validation): {len(historical_prices_train) + len(historical_prices_val) + lookback}")
-    plt.plot(np.arange(len(historical_prices_train) + len(historical_prices_val) + lookback,
-                       len(historical_prices_train) + len(historical_prices_val) + lookback + len(predicted_prices_val)),
-             predicted_prices_val,
-             color='red', label='Predicted Prices (Validation)')
+    predicted_prices_val = scaler_y.inverse_transform(validation_predicted[:, -1, :]).flatten()
+    plot_data(len(historical_prices_train) + len(historical_prices_val) + lookback,
+              len(historical_prices_train) + len(historical_prices_val) + lookback + len(predicted_prices_val),
+              predicted_prices_val, 'red', 'Predicted Prices (Validation)')
     
     # Plotting actual prices of testing data
     historical_prices_test = scaler_y.inverse_transform(y_test.reshape(-1, 1)).flatten()
-    print(f"Starting time step (Testing): {len(historical_prices_train) + len(historical_prices_val)}")
-    plt.plot(np.arange(len(historical_prices_train) + len(historical_prices_val),
-                       len(historical_prices_train) + len(historical_prices_val) + len(historical_prices_test)),
-             historical_prices_test,
-             color='purple', label='Actual Prices (Testing)')
+    plot_data(len(historical_prices_train) + len(historical_prices_val),
+              len(historical_prices_train) + len(historical_prices_val) + len(historical_prices_test),
+              historical_prices_test, 'purple', 'Actual Prices (Testing)')
     
     # Plotting predicted prices of testing data
-    predicted_prices_test = scaler_y.inverse_transform(test_predicted[:, -1, :]).flatten()  # Updated line
-    print(f"Starting time step (Predicted Testing): {len(historical_prices_train) + len(historical_prices_val) + lookback}")
-    plt.plot(np.arange(len(historical_prices_train) + len(historical_prices_val) + lookback,
-                       len(historical_prices_train) + len(historical_prices_val) + lookback + len(predicted_prices_test)),
-             predicted_prices_test,
-             color='yellow', label='Predicted Prices (Testing)')
+    predicted_prices_test = scaler_y.inverse_transform(test_predicted[:, -1, :]).flatten()
+    plot_data(len(historical_prices_train) + len(historical_prices_val) +lookback,
+              len(historical_prices_train) + len(historical_prices_val) + lookback + len(predicted_prices_test),
+              predicted_prices_test, 'yellow', 'Predicted Prices (Testing)')
     
     plt.title('Stock Price Prediction')
     plt.xlabel('Time Step')
@@ -397,12 +396,10 @@ def make_predictions(X_train, y_train, X_test, y_test, lookback, model, scalers_
 
         # Get the most recent data from each ticker,
         # but replace the 'Close' price with the predicted value
-        most_recent_data_list = []
-        for j in range(len(tickers)):
-            most_recent_data_ticker = X_latest[j][-1, -1, :].copy()
-            most_recent_data_ticker[0] = predicted_price_scalar  # assuming 'Close' price is at index 0
-            most_recent_data_list.append(most_recent_data_ticker)
-        most_recent_data_combined = np.concatenate(most_recent_data_list).reshape(1, len(tickers), -1)
+        most_recent_data_list = [X_latest[j][-1, -1, :].copy() for j in range(len(tickers))]
+        most_recent_data_list = np.array(most_recent_data_list)
+        most_recent_data_list[:, 0] = predicted_price_scalar  # assuming 'Close' price is at index 0
+        most_recent_data_combined = most_recent_data_list.reshape(1, len(tickers), -1)
 
         next_input = np.concatenate((next_input, most_recent_data_combined), axis=1)
 
@@ -494,4 +491,4 @@ def predict_stock_price(ticker, lookback, unit, prediction_length):
 
 # Call the function with desired parameters
 prediction_length = 50
-predict_stock_price('EURUSD=X', 120, '1m', prediction_length)
+predict_stock_price('AAPL', 120, '1d', prediction_length)
