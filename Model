@@ -198,6 +198,10 @@ def prepare_data(data_values, lookback, data):
     X = np.array(X)
     y = np.array(y)
 
+    y = np.array(y)
+    scalers_x = MinMaxScaler().fit(X)
+    scaler_y = MinMaxScaler().fit(y.reshape(-1, 1))  # Reshape y to be 2D
+
     return X, y, scalers_x, scaler_y
 
 def split_data(X, y, train_size=0.6, val_size=0.3):
@@ -225,9 +229,9 @@ def train_model(X_train, y_train, X_val, y_val, lookback, ticker):
     threshold_value = 0.01
     num_crossings = 5
 
-    model = build_model(lookback, X_train.shape[2])
-    X_train_reshaped = X_train.reshape(X_train.shape[0], lookback, X_train.shape[2])
-    X_val_reshaped = X_val.reshape(X_val.shape[0], lookback, X_val.shape[2])
+    model = build_model(lookback, X_train.shape[1])
+    X_train_reshaped = X_train.reshape(X_train.shape[0], lookback, -1)
+    X_val_reshaped = X_val.reshape(X_val.shape[0], lookback, -1)
     y_train = y_train.reshape(-1, 1)
     y_val = y_val.reshape(-1, 1)
 
