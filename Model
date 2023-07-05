@@ -225,9 +225,9 @@ def train_model(X_train, y_train, X_val, y_val, lookback, ticker):
     threshold_value = 0.01
     num_crossings = 5
 
-    model = build_model(lookback, X_train.shape[1:])
-    X_train_reshaped = X_train.reshape(X_train.shape[0], lookback, X_train.shape[1])
-    X_val_reshaped = X_val.reshape(X_val.shape[0], lookback, X_val.shape[1])
+    model = build_model(lookback, X_train.shape[2])
+    X_train_reshaped = X_train.reshape(X_train.shape[0], lookback, X_train.shape[2])
+    X_val_reshaped = X_val.reshape(X_val.shape[0], lookback, X_val.shape[2])
     y_train = y_train.reshape(-1, 1)
     y_val = y_val.reshape(-1, 1)
 
@@ -257,14 +257,14 @@ def train_model(X_train, y_train, X_val, y_val, lookback, ticker):
     class R2ScoreCallback(tf.keras.callbacks.Callback):
         def on_epoch_end(self, epoch, logs=None):
             val_predictions = self.model.predict(X_val_reshaped)
-            val_predictions = val_predictions[:, -1]  # Add this line
+            val_predictions = val_predictions[:, -1, :]  # Add this line
             r2 = r2_score(y_val, val_predictions)
             print(f'Validation R2 Score: {r2}')
 
     class MAPECallback(tf.keras.callbacks.Callback):
         def on_epoch_end(self, epoch, logs=None):
             val_predictions = self.model.predict(X_val_reshaped)
-            val_predictions = val_predictions[:, -1]  # Add this line
+            val_predictions = val_predictions[:, -1, :]  # Add this line
             mape = calculate_mape(y_val, val_predictions)
             print(f'Validation MAPE: {mape}%')
 
@@ -402,9 +402,14 @@ def predict_stock_price(ticker, lookback, unit, prediction_length):
     if data is None:
         return
 
-    X, y, scaler = prepare_data(data[:, 3].reshape(-1, 1), lookback, data)
+    X, y, scalers_x, scaler_y = prepare_data(data, lookback, data)
 
     X_train, X_val, X_test, y_train, y_val, y_test = split_data(X, y)
+
+    # Reshape y arrays
+    y_train = y_train.reshape(-1, 1)
+    y_val = y_val.reshape(-1, 1)
+    y_test = y_test.reshape(-1, 1)
 
     model, training_predicted, validation_predicted, history = train_model(X_train,
                                                                           y_train,
@@ -421,8 +426,8 @@ def predict_stock_price(ticker, lookback, unit, prediction_length):
                      validation_predicted,
                      y_test,
                      test_predicted,
-                     scaler.inverse_transform,
-                     lookback)  # Pass scaler.inverse_transform as an argument
+                     scaler_y,
+                     lookback)  # Pass test_predicted as an argument
 
     plot_loss(history)
 
@@ -432,7 +437,8 @@ def predict_stock_price(ticker, lookback, unit, prediction_length):
                      y_test,
                      lookback,
                      model,
-                     scaler.inverse_transform,
+                     scalers_x,
+                     scaler_y,
                      prediction_length,
                      ticker)
 
